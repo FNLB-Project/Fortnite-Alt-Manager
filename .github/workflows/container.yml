@@ -3,6 +3,11 @@
 name: 'Container'
 on:
     workflow_dispatch:
+        inputs:
+            allow_vulnerable:
+                description: 'Push even if a fixable critical vulnerability is found'
+                type: boolean
+                default: false
     push:
         branches:
             - stable
@@ -55,7 +60,29 @@ jobs:
                   layers: true
                   tags: ${{ steps.setup-tags.outputs.build-tags }}
 
+            - name: 'Export image for scanning'
+              run: buildah push "${{ steps.build-image.outputs.image-with-tag }}" "oci-archive:${RUNNER_TEMP}/image.tar"
+
+            - name: 'Generate SBOM'
+              uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+              with:
+                  image: oci-archive:${{ runner.temp }}/image.tar
+                  format: spdx-json
+                  output-file: ${{ runner.temp }}/sbom.spdx.json
+                  artifact-name: sbom.spdx.json
+                  upload-artifact-retention: 30
+
+            # Blocks the push on a critical vulnerability that already has a fix. Run the workflow manually with allow_vulnerable to override.
+            - name: 'Scan image for vulnerabilities'
+              uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+              with:
+                  sbom: ${{ runner.temp }}/sbom.spdx.json
+                  fail-build: ${{ inputs.allow_vulnerable != true }}
+                  severity-cutoff: critical
+                  only-fixed: true
+
             - name: 'Push to GHCR'
+              id: push
               uses: redhat-actions/push-to-registry@9986a6552bc4571882a4a67e016b17361412b4df # v2.7.1
               env:
                   REGISTRY_USER: ${{ github.actor }}
@@ -67,3 +94,16 @@ jobs:
                   registry: ${{ env.REGISTRY }}
                   username: ${{ env.REGISTRY_USER }}
                   password: ${{ env.REGISTRY_PASSWORD }}
+
+            - name: 'Install cosign'
+              uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+            # Keyless signature (GitHub OIDC) plus the SBOM as an attestation, both stored next to the image in GHCR.
+            - name: 'Sign image and attest SBOM'
+              env:
+                  DIGEST: ${{ steps.push.outputs.digest }}
+                  REGISTRY_PATH: ${{ steps.push.outputs.registry-path }}
+              run: |
+                  REF="${REGISTRY_PATH%%:*}@${DIGEST}"
+                  cosign sign --yes "${REF}"
+                  cosign attest --yes --type spdxjson --predicate "${RUNNER_TEMP}/sbom.spdx.json" "${REF}"
