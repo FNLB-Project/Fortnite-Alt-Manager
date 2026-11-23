@@ -103,7 +103,10 @@ jobs:
               env:
                   DIGEST: ${{ steps.push.outputs.digest }}
                   REGISTRY_PATH: ${{ steps.push.outputs.registry-path }}
+                  REGISTRY_USER: ${{ github.actor }}
+                  REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
               run: |
+                  echo "${REGISTRY_PASSWORD}" | cosign login ghcr.io -u "${REGISTRY_USER}" --password-stdin
                   REF="${REGISTRY_PATH%%:*}@${DIGEST}"
                   cosign sign --yes "${REF}"
                   cosign attest --yes --type spdxjson --predicate "${RUNNER_TEMP}/sbom.spdx.json" "${REF}"
