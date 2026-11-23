@@ -107,6 +107,8 @@ jobs:
                   REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   echo "${REGISTRY_PASSWORD}" | cosign login ghcr.io -u "${REGISTRY_USER}" --password-stdin
+                  # The public Sigstore log has short outages (HTTP 502): retry instead of leaving a pushed image unsigned.
+                  retry() { for i in 1 2 3 4; do "$@" && return 0; echo "attempt ${i} failed, retrying"; sleep $((i * 20)); done; return 1; }
                   REF="${REGISTRY_PATH%%:*}@${DIGEST}"
-                  cosign sign --yes "${REF}"
-                  cosign attest --yes --type spdxjson --predicate "${RUNNER_TEMP}/sbom.spdx.json" "${REF}"
+                  retry cosign sign --yes "${REF}"
+                  retry cosign attest --yes --type spdxjson --predicate "${RUNNER_TEMP}/sbom.spdx.json" "${REF}"
